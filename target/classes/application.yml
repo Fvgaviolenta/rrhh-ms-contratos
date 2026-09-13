@@ -1,0 +1,42 @@
+server:
+  port: ${SERVER_PORT:8083}
+spring:
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  application:
+    name: rrhh-contratos
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3309/rrhh_db?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${SPRING_DATASOURCE_USERNAME:rrhh}
+    password: ${SPRING_DATASOURCE_PASSWORD:rrhh_local}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+  flyway:
+    enabled: true
+    table: flyway_history_contratos
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${COGNITO_ISSUER:https://cognito-idp.us-east-1.amazonaws.com/us-east-1_xxxxxxxxx}
+          audiences: ${COGNITO_AUDIENCE:}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+rrhh:
+  security:
+    jwt:
+      role-claim: ${JWT_ROLE_CLAIM:custom:role}
+      tenant-claim: ${JWT_TENANT_CLAIM:custom:tenant_id}
+      user-id-claim: ${JWT_USER_ID_CLAIM:custom:user_id}
+      trabajador-id-claim: ${JWT_TRABAJADOR_ID_CLAIM:custom:trabajador_id}

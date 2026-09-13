@@ -1,0 +1,3 @@
+com\rrhh\contratos\controller\ContratoControllerIT.class
+com\rrhh\contratos\util\LiquidacionCalculatorTest.class
+com\rrhh\contratos\config\TestJwtConfig.class
