@@ -1,0 +1,44 @@
+# GitHub repo = esta carpeta backend (Dockerfile en la raíz).
+# Push a main/develop o Run workflow → ECR rrhh:contratos
+# Secrets: guia-de-despliegue-aws.md paso 3 (Repository secrets, no Environment).
+
+name: Build and push ECR (un servicio)
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPO: ${{ vars.ECR_REPOSITORY || secrets.ECR_REPOSITORY || 'rrhh' }}
+          TAG: contratos
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          IMAGE="${REGISTRY}/${REPO}:${TAG}"
+          docker build -t "$IMAGE" -t "${REGISTRY}/${REPO}:${TAG}-${SHA:0:7}" .
+          docker push "$IMAGE"
+          docker push "${REGISTRY}/${REPO}:${TAG}-${SHA:0:7}"
+          echo "Publicado $IMAGE"
