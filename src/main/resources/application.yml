@@ -22,6 +22,8 @@ spring:
   flyway:
     enabled: true
     table: flyway_history_contratos
+    baseline-on-migrate: true
+    baseline-version: 0
   security:
     oauth2:
       resourceserver:
