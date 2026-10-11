@@ -26,6 +26,10 @@ public class Liquidacion {
     private String periodo;
     @Column(name = "sueldo_base", nullable = false, precision = 14, scale = 2)
     private BigDecimal sueldoBase;
+    @Column(name = "monto_horas_extra", nullable = false, precision = 14, scale = 2)
+    private BigDecimal montoHorasExtra;
+    @Column(name = "total_haberes", nullable = false, precision = 14, scale = 2)
+    private BigDecimal totalHaberes;
     @Column(name = "afp_descuento", nullable = false, precision = 14, scale = 2)
     private BigDecimal afpDescuento;
     @Column(name = "salud_descuento", nullable = false, precision = 14, scale = 2)

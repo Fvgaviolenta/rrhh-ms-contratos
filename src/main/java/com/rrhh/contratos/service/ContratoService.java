@@ -17,6 +17,15 @@ import com.rrhh.contratos.security.TenantContext;
 import com.rrhh.contratos.util.LiquidacionCalculator;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpMethod;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -30,21 +39,34 @@ public class ContratoService {
     private final LiquidacionRepository liquidacionRepository;
     private final AuditLogRepository auditLogRepository;
     private final TenantContext tenantContext;
+    private final RestTemplate restTemplate;
+    private final String trabajadoresBaseUrl;
+    private final String asistenciaBaseUrl;
 
     public ContratoService(
             ContratoRepository contratoRepository,
             LiquidacionRepository liquidacionRepository,
             AuditLogRepository auditLogRepository,
-            TenantContext tenantContext
+            TenantContext tenantContext,
+            @Value("${rrhh.integrations.trabajadores.base-url:http://localhost:8082}") String trabajadoresBaseUrl,
+            @Value("${rrhh.integrations.asistencia.base-url:http://localhost:8084}") String asistenciaBaseUrl
     ) {
         this.contratoRepository = contratoRepository;
         this.liquidacionRepository = liquidacionRepository;
         this.auditLogRepository = auditLogRepository;
         this.tenantContext = tenantContext;
+        this.restTemplate = new RestTemplate();
+        this.trabajadoresBaseUrl = trabajadoresBaseUrl.replaceAll("/$", "");
+        this.asistenciaBaseUrl = asistenciaBaseUrl.replaceAll("/$", "");
     }
 
     public List<ContratoResponse> listar() {
         return contratoRepository.findByTenantId(tenantContext.require().tenantId()).stream().map(this::toResponse).toList();
+    }
+
+    public List<ContratoResponse> listarPorTenantPlataforma(String tenantId) {
+        exigirOperadorSaas();
+        return contratoRepository.findByTenantId(tenantId).stream().map(this::toResponse).toList();
     }
 
     public List<ContratoResponse> porTrabajador(String trabajadorId) {
@@ -62,6 +84,7 @@ public class ContratoService {
     @Transactional
     public ContratoResponse crear(CrearContratoRequest request) {
         String tenantId = tenantContext.require().tenantId();
+        validarTrabajadorDelTenant(request.trabajadorId());
         if (contratoRepository.existsByTenantIdAndTrabajadorIdAndActivoTrue(tenantId, request.trabajadorId())) {
             throw new DomainException(400, "El trabajador ya tiene un contrato activo", "trabajador_id");
         }
@@ -108,13 +131,17 @@ public class ContratoService {
     public LiquidacionResponse calcularLiquidacion(CalcularLiquidacionRequest request) {
         Contrato contrato = buscar(request.contratoId());
         validarAccesoTrabajador(contrato.getTrabajadorId());
-        LiquidacionCalculator.Resultado r = LiquidacionCalculator.calcular(contrato.getSalarioBase(), contrato.getTipoContrato());
+        BigDecimal montoHorasExtra = obtenerHorasExtraAprobadas(contrato.getTrabajadorId(), request.periodo());
+        BigDecimal totalHaberes = contrato.getSalarioBase().add(montoHorasExtra);
+        LiquidacionCalculator.Resultado r = LiquidacionCalculator.calcular(totalHaberes, contrato.getTipoContrato());
         Liquidacion liquidacion = new Liquidacion();
         liquidacion.setId(UUID.randomUUID().toString());
         liquidacion.setTenantId(contrato.getTenantId());
         liquidacion.setContratoId(contrato.getId());
         liquidacion.setPeriodo(request.periodo());
         liquidacion.setSueldoBase(contrato.getSalarioBase());
+        liquidacion.setMontoHorasExtra(montoHorasExtra);
+        liquidacion.setTotalHaberes(totalHaberes);
         liquidacion.setAfpDescuento(r.afpDescuento());
         liquidacion.setSaludDescuento(r.saludDescuento());
         liquidacion.setSeguroCesantia(r.seguroCesantia());
@@ -129,6 +156,48 @@ public class ContratoService {
     private Contrato buscar(String contratoId) {
         return contratoRepository.findByIdAndTenantId(contratoId, tenantContext.require().tenantId())
                 .orElseThrow(() -> new DomainException(404, "Contrato no encontrado"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private BigDecimal obtenerHorasExtraAprobadas(String trabajadorId, String periodo) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (!(authentication instanceof JwtAuthenticationToken jwtAuthentication)) throw new DomainException(401, "No fue posible autorizar la consulta de horas extra");
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtAuthentication.getToken().getTokenValue());
+        try {
+            var response = restTemplate.exchange(asistenciaBaseUrl + "/api/v1/horas-extra/resumen?trabajador_id=" + trabajadorId + "&periodo=" + periodo,
+                    HttpMethod.GET, new HttpEntity<>(headers), java.util.Map.class);
+            Object datos = response.getBody() == null ? null : response.getBody().get("datos");
+            if (!(datos instanceof java.util.Map<?, ?> resumen) || resumen.get("monto_total") == null) return BigDecimal.ZERO;
+            return new BigDecimal(resumen.get("monto_total").toString());
+        } catch (RestClientException ex) {
+            throw new DomainException(503, "No fue posible obtener las horas extra aprobadas");
+        }
+    }
+
+    private void exigirOperadorSaas() {
+        if (!Roles.OPERADOR_SAAS.equals(Roles.authorityFromClaim(tenantContext.current().role()))) {
+            throw new DomainException(403, "Acceso exclusivo para el operador SaaS");
+        }
+    }
+
+    private void validarTrabajadorDelTenant(String trabajadorId) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (!(authentication instanceof JwtAuthenticationToken jwtAuthentication)) {
+            throw new DomainException(401, "No fue posible validar el trabajador autenticado");
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtAuthentication.getToken().getTokenValue());
+        try {
+            restTemplate.exchange(
+                    trabajadoresBaseUrl + "/api/v1/trabajadores/" + trabajadorId,
+                    HttpMethod.GET,
+                    new HttpEntity<>(headers),
+                    Object.class
+            );
+        } catch (RestClientException ex) {
+            throw new DomainException(400, "El trabajador no pertenece al tenant o no existe", "trabajador_id");
+        }
     }
 
     private void validarAccesoTrabajador(String trabajadorId) {
@@ -160,7 +229,7 @@ public class ContratoService {
     }
 
     private LiquidacionResponse toResponse(Liquidacion l) {
-        return new LiquidacionResponse(l.getId(), l.getContratoId(), l.getPeriodo(), l.getSueldoBase(),
+        return new LiquidacionResponse(l.getId(), l.getContratoId(), l.getPeriodo(), l.getSueldoBase(), l.getMontoHorasExtra(), l.getTotalHaberes(),
                 l.getAfpDescuento(), l.getSaludDescuento(), l.getSeguroCesantia(),
                 l.getImpuestoSegundaCategoria(), l.getSueldoLiquido(), l.getEstado());
     }

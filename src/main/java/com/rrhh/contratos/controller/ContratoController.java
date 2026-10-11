@@ -30,6 +30,13 @@ public class ContratoController {
         return ApiResponse.ok(contratoService.listar(), "Contratos del tenant");
     }
 
+    @GetMapping("/plataforma/tenants/{tenant_id}/contratos")
+    @PreAuthorize("hasRole('OPERADOR_SAAS')")
+    public ApiResponse<List<ContratoResponse>> listarPorTenantPlataforma(
+            @PathVariable("tenant_id") String tenantId) {
+        return ApiResponse.ok(contratoService.listarPorTenantPlataforma(tenantId), "Contratos del tenant solicitado");
+    }
+
     @GetMapping("/contratos/trabajador/{trabajador_id}")
     @PreAuthorize("hasAnyRole('SUPERADMIN','ADMIN_RRHH','TRABAJADOR')")
     public ApiResponse<List<ContratoResponse>> porTrabajador(@PathVariable("trabajador_id") String trabajadorId) {

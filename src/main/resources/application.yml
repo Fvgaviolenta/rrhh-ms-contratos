@@ -36,6 +36,11 @@ management:
       exposure:
         include: health,info,metrics
 rrhh:
+  integrations:
+    trabajadores:
+      base-url: ${RRHH_TRABAJADORES_URL:http://localhost:8082}
+    asistencia:
+      base-url: ${RRHH_ASISTENCIA_URL:http://localhost:8084}
   security:
     jwt:
       role-claim: ${JWT_ROLE_CLAIM:custom:role}

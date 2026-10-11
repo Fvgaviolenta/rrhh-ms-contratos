@@ -7,6 +7,8 @@ public record LiquidacionResponse(
         String contratoId,
         String periodo,
         BigDecimal sueldoBase,
+        BigDecimal montoHorasExtra,
+        BigDecimal totalHaberes,
         BigDecimal afpDescuento,
         BigDecimal saludDescuento,
         BigDecimal seguroCesantia,

@@ -16,6 +16,14 @@ public class TenantContext {
         return user;
     }
 
+    public AuthenticatedUser current() {
+        AuthenticatedUser user = CURRENT.get();
+        if (user == null) {
+            throw new IllegalStateException("No hay contexto de autenticación");
+        }
+        return user;
+    }
+
     public void clear() { CURRENT.remove(); }
 
     public record AuthenticatedUser(String tenantId, String userId, String email, String role, String trabajadorId, String cognitoSub) {}
