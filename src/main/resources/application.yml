@@ -1,6 +1,8 @@
 server:
   port: ${SERVER_PORT:8083}
 spring:
+  config:
+    import: optional:file:.env[.properties]
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
   application:
@@ -36,6 +38,11 @@ management:
       exposure:
         include: health,info,metrics
 rrhh:
+  sqs:
+    enabled: ${RRHH_SQS_ENABLED:false}
+    events-queue-url: ${SQS_EVENTS_QUEUE_URL:}
+    region: ${AWS_REGION:us-east-1}
+    publish-delay-ms: ${SQS_PUBLISH_DELAY_MS:5000}
   integrations:
     trabajadores:
       base-url: ${RRHH_TRABAJADORES_URL:http://localhost:8082}

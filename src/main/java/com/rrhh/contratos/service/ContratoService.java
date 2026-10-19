@@ -42,6 +42,7 @@ public class ContratoService {
     private final RestTemplate restTemplate;
     private final String trabajadoresBaseUrl;
     private final String asistenciaBaseUrl;
+    private final OutboxPublisher outboxPublisher;
 
     public ContratoService(
             ContratoRepository contratoRepository,
@@ -49,7 +50,8 @@ public class ContratoService {
             AuditLogRepository auditLogRepository,
             TenantContext tenantContext,
             @Value("${rrhh.integrations.trabajadores.base-url:http://localhost:8082}") String trabajadoresBaseUrl,
-            @Value("${rrhh.integrations.asistencia.base-url:http://localhost:8084}") String asistenciaBaseUrl
+            @Value("${rrhh.integrations.asistencia.base-url:http://localhost:8084}") String asistenciaBaseUrl,
+            OutboxPublisher outboxPublisher
     ) {
         this.contratoRepository = contratoRepository;
         this.liquidacionRepository = liquidacionRepository;
@@ -58,6 +60,7 @@ public class ContratoService {
         this.restTemplate = new RestTemplate();
         this.trabajadoresBaseUrl = trabajadoresBaseUrl.replaceAll("/$", "");
         this.asistenciaBaseUrl = asistenciaBaseUrl.replaceAll("/$", "");
+        this.outboxPublisher = outboxPublisher;
     }
 
     public List<ContratoResponse> listar() {
@@ -99,6 +102,8 @@ public class ContratoService {
         contrato.setCreadoEn(Instant.now());
         contratoRepository.save(contrato);
         auditar("Contrato", contrato.getId(), "Creacion", null, contrato.getSalarioBase().toPlainString());
+        outboxPublisher.registrar("contrato.creado", contrato.getTenantId(), contrato.getId(),
+                java.util.Map.of("trabajadorId", contrato.getTrabajadorId(), "contratoId", contrato.getId()));
         return toResponse(contrato);
     }
 
@@ -124,7 +129,10 @@ public class ContratoService {
         }
         contrato.setActivo(false);
         contrato.setFechaTermino(LocalDate.now());
-        return toResponse(contratoRepository.save(contrato));
+        contratoRepository.save(contrato);
+        outboxPublisher.registrar("contrato.finalizado", contrato.getTenantId(), contrato.getId(),
+                java.util.Map.of("trabajadorId", contrato.getTrabajadorId(), "contratoId", contrato.getId()));
+        return toResponse(contrato);
     }
 
     @Transactional
