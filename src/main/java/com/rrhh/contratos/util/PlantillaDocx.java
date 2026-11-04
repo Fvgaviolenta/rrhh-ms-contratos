@@ -2,17 +2,15 @@ package com.rrhh.contratos.util;
 
 import fr.opensagres.poi.xwpf.converter.pdf.PdfConverter;
 import fr.opensagres.poi.xwpf.converter.pdf.PdfOptions;
-import org.apache.poi.xwpf.usermodel.IBodyElement;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFEndnote;
 import org.apache.poi.xwpf.usermodel.XWPFFooter;
+import org.apache.poi.xwpf.usermodel.XWPFFootnote;
 import org.apache.poi.xwpf.usermodel.XWPFHeader;
-import org.apache.poi.xwpf.usermodel.XWPFParagraph;
-import org.apache.poi.xwpf.usermodel.XWPFRun;
-import org.apache.poi.xwpf.usermodel.XWPFTable;
-import org.apache.poi.xwpf.usermodel.XWPFTableCell;
-import org.apache.poi.xwpf.usermodel.XWPFTableRow;
-import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTText;
+import org.apache.xmlbeans.XmlCursor;
+import org.apache.xmlbeans.XmlObject;
 
+import javax.xml.namespace.QName;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -27,11 +25,18 @@ import java.util.regex.Pattern;
 
 /**
  * Operaciones sin estado sobre una plantilla .docx con campos {@code $clave}: extraer claves, rellenar y
- * convertir a PDF. Los campos se buscan en parrafos del cuerpo, celdas de tabla (recursivas), encabezados y
- * pies. El reemplazo trabaja por parrafo para cubrir un campo que Word partio en varios runs.
+ * convertir a PDF. Los campos se buscan en todo parrafo ({@code w:p}) del cuerpo, encabezados, pies, notas al
+ * pie y notas finales, a cualquier profundidad: tablas, controles de contenido y cajas de texto incluidos.
+ * El reemplazo trabaja por parrafo sobre sus textos ({@code w:t}) para cubrir un campo que Word partio en
+ * varios runs: solo se tocan los textos que abarca cada campo, y el valor toma el formato del primero.
  */
 public final class PlantillaDocx {
     public static final Pattern CAMPO = Pattern.compile("\\$([a-z][a-z0-9_]*)");
+
+    private static final String W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    private static final String NS = "declare namespace w='" + W + "' ";
+    private static final QName PARRAFO = new QName(W, "p");
+    private static final QName XML_SPACE = new QName("http://www.w3.org/XML/1998/namespace", "space");
 
     private PlantillaDocx() {}
 
@@ -39,8 +44,8 @@ public final class PlantillaDocx {
     public static List<String> extraerClaves(byte[] docx) {
         Set<String> claves = new LinkedHashSet<>();
         try (XWPFDocument doc = abrir(docx)) {
-            recorrerParrafos(doc, p -> {
-                Matcher m = CAMPO.matcher(textoDe(p));
+            recorrerParrafos(doc, textos -> {
+                Matcher m = CAMPO.matcher(unir(textos));
                 while (m.find()) {
                     claves.add(m.group(1));
                 }
@@ -63,7 +68,7 @@ public final class PlantillaDocx {
             }
         }
         try (XWPFDocument doc = abrir(docx); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            recorrerParrafos(doc, p -> reemplazar(p, valores));
+            recorrerParrafos(doc, textos -> reemplazar(textos, valores));
             doc.write(out);
             return out.toByteArray();
         } catch (IOException e) {
@@ -85,78 +90,143 @@ public final class PlantillaDocx {
         return new XWPFDocument(new ByteArrayInputStream(docx));
     }
 
-    private static void reemplazar(XWPFParagraph p, Map<String, String> valores) {
-        List<XWPFRun> runs = p.getRuns();
-        if (runs.isEmpty()) {
-            return;
+    /**
+     * Reemplaza los campos de un parrafo. Los matches se aplican de derecha a izquierda sobre los textos
+     * originales: el texto del primer {@code w:t} que abarca un campo queda con su prefijo, el valor y (si el
+     * campo termina en el mismo {@code w:t}) su sufijo; los {@code w:t} intermedios quedan vacios y el ultimo
+     * conserva lo que sigue al campo. Tabs, saltos y formato de los demas runs no se tocan.
+     */
+    private static void reemplazar(List<XmlObject> textos, Map<String, String> valores) {
+        List<String> partes = new ArrayList<>();
+        for (XmlObject t : textos) {
+            partes.add(leer(t));
         }
-        String texto = textoDe(p);
-        Matcher m = CAMPO.matcher(texto);
-        if (!m.find()) {
-            return;
-        }
-        StringBuilder sb = new StringBuilder();
-        m.reset();
+        String completo = String.join("", partes);
+        Matcher m = CAMPO.matcher(completo);
+        List<int[]> matches = new ArrayList<>();
+        List<String> reemplazos = new ArrayList<>();
         while (m.find()) {
             String valor = valores.get(m.group(1));
             if (valor == null) {
                 throw new IllegalStateException("Campo sin valor: " + m.group(1));
             }
-            m.appendReplacement(sb, Matcher.quoteReplacement(valor));
+            matches.add(new int[]{m.start(), m.end()});
+            reemplazos.add(valor);
         }
-        m.appendTail(sb);
-        for (int i = runs.size() - 1; i >= 1; i--) {
-            vaciar(runs.get(i));
+        if (matches.isEmpty()) {
+            return;
         }
-        XWPFRun primero = runs.get(0);
-        vaciar(primero);
-        primero.setText(sb.toString(), 0);
-    }
-
-    private static void vaciar(XWPFRun run) {
-        while (run.getCTR().sizeOfTArray() > 0) {
-            run.getCTR().removeT(0);
+        int[] inicios = new int[partes.size()];
+        for (int i = 1; i < partes.size(); i++) {
+            inicios[i] = inicios[i - 1] + partes.get(i - 1).length();
         }
-    }
-
-    /** Texto de los elementos {@code w:t} de los runs; tabs y saltos quedan en su run, fuera del reemplazo. */
-    private static String textoDe(XWPFParagraph p) {
-        StringBuilder sb = new StringBuilder();
-        for (XWPFRun run : p.getRuns()) {
-            for (CTText t : run.getCTR().getTList()) {
-                if (t.getStringValue() != null) {
-                    sb.append(t.getStringValue());
+        List<String> nuevas = new ArrayList<>(partes);
+        for (int k = matches.size() - 1; k >= 0; k--) {
+            int inicio = matches.get(k)[0];
+            int fin = matches.get(k)[1];
+            int primero = indiceDe(inicios, partes, inicio);
+            int ultimo = indiceDe(inicios, partes, fin - 1);
+            String antes = nuevas.get(primero).substring(0, inicio - inicios[primero]);
+            String despues = nuevas.get(ultimo).substring(fin - inicios[ultimo]);
+            if (primero == ultimo) {
+                nuevas.set(primero, antes + reemplazos.get(k) + despues);
+            } else {
+                nuevas.set(primero, antes + reemplazos.get(k));
+                for (int i = primero + 1; i < ultimo; i++) {
+                    nuevas.set(i, "");
                 }
+                nuevas.set(ultimo, despues);
             }
+        }
+        for (int i = 0; i < textos.size(); i++) {
+            if (!nuevas.get(i).equals(partes.get(i))) {
+                escribir(textos.get(i), nuevas.get(i));
+            }
+        }
+    }
+
+    /** Indice del {@code w:t} que contiene la posicion (los textos vacios nunca contienen una posicion). */
+    private static int indiceDe(int[] inicios, List<String> partes, int posicion) {
+        for (int i = partes.size() - 1; i >= 0; i--) {
+            if (!partes.get(i).isEmpty() && inicios[i] <= posicion) {
+                return i;
+            }
+        }
+        throw new IllegalStateException("Posicion fuera del parrafo: " + posicion);
+    }
+
+    /** Texto de un {@code w:t}; por cursor, asi sirve tambien dentro de contenido que XmlBeans no tipa. */
+    private static String leer(XmlObject t) {
+        XmlCursor c = t.newCursor();
+        try {
+            return c.getTextValue();
+        } finally {
+            c.dispose();
+        }
+    }
+
+    private static void escribir(XmlObject t, String texto) {
+        XmlCursor c = t.newCursor();
+        try {
+            c.setTextValue(texto);
+            c.setAttributeText(XML_SPACE, "preserve");
+        } finally {
+            c.dispose();
+        }
+    }
+
+    private static String unir(List<XmlObject> textos) {
+        StringBuilder sb = new StringBuilder();
+        for (XmlObject t : textos) {
+            sb.append(leer(t));
         }
         return sb.toString();
     }
 
-    private static void recorrerParrafos(XWPFDocument doc, Consumer<XWPFParagraph> accion) {
-        List<List<IBodyElement>> bloques = new ArrayList<>();
-        bloques.add(doc.getBodyElements());
+    /** Cada parrafo del documento, como la lista ordenada de sus {@code w:t} (sin los de parrafos anidados). */
+    private static void recorrerParrafos(XWPFDocument doc, Consumer<List<XmlObject>> accion) {
+        List<XmlObject> raices = new ArrayList<>();
+        raices.add(doc.getDocument());
         for (XWPFHeader header : doc.getHeaderList()) {
-            bloques.add(header.getBodyElements());
+            raices.add(header._getHdrFtr());
         }
         for (XWPFFooter footer : doc.getFooterList()) {
-            bloques.add(footer.getBodyElements());
+            raices.add(footer._getHdrFtr());
         }
-        for (List<IBodyElement> bloque : bloques) {
-            recorrer(bloque, accion);
+        for (XWPFFootnote nota : doc.getFootnotes()) {
+            raices.add(nota.getCTFtnEdn());
+        }
+        for (XWPFEndnote nota : doc.getEndnotes()) {
+            raices.add(nota.getCTFtnEdn());
+        }
+        for (XmlObject raiz : raices) {
+            for (XmlObject parrafo : raiz.selectPath(NS + ".//w:p")) {
+                List<XmlObject> textos = new ArrayList<>();
+                for (XmlObject run : parrafo.selectPath(NS + ".//w:r")) {
+                    if (parrafoMasCercano(run, parrafo)) {
+                        textos.addAll(List.of(run.selectPath(NS + "./w:t")));
+                    }
+                }
+                if (!textos.isEmpty()) {
+                    accion.accept(textos);
+                }
+            }
         }
     }
 
-    private static void recorrer(List<IBodyElement> elementos, Consumer<XWPFParagraph> accion) {
-        for (IBodyElement e : elementos) {
-            if (e instanceof XWPFParagraph p) {
-                accion.accept(p);
-            } else if (e instanceof XWPFTable t) {
-                for (XWPFTableRow row : t.getRows()) {
-                    for (XWPFTableCell cell : row.getTableCells()) {
-                        recorrer(cell.getBodyElements(), accion);
-                    }
+    private static boolean parrafoMasCercano(XmlObject run, XmlObject parrafo) {
+        XmlCursor c = run.newCursor();
+        XmlCursor p = parrafo.newCursor();
+        try {
+            while (c.toParent()) {
+                if (PARRAFO.equals(c.getName())) {
+                    return c.isAtSamePositionAs(p);
                 }
             }
+            return false;
+        } finally {
+            c.dispose();
+            p.dispose();
         }
     }
 }
