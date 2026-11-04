@@ -16,6 +16,7 @@ import java.sql.SQLException;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -35,7 +36,7 @@ class MigracionesTest {
                 "select count(*) from flyway_history_contratos where success = 1", Integer.class);
         // La base del contenedor la comparten todas las clases de test: se comprueba que la tabla existe, no que este vacia.
         Integer contratos = jdbc.queryForObject("select count(*) from contratos_contrato", Integer.class);
-        assertThat(aplicadas).isEqualTo(4);
+        assertThat(aplicadas).isEqualTo(5);
         assertThat(contratos).isNotNull().isGreaterThanOrEqualTo(0);
     }
 
@@ -66,6 +67,26 @@ class MigracionesTest {
         assertThat(tablaDocumento).isEqualTo(1);
 
         rootJdbc.execute("drop database " + ESQUEMA);
+    }
+
+    @Test
+    void indiceUnicoImpideDosContratosVigentesDelMismoTrabajador() {
+        String trabajador = java.util.UUID.randomUUID().toString();
+        insertar(trabajador, "RECHAZADO");
+        insertar(trabajador, "FINALIZADO");
+        insertar(trabajador, "PENDIENTE_FIRMA");
+        assertThatThrownBy(() -> insertar(trabajador, "FIRMADO"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        Integer otroTenant = jdbc.update("insert into contratos_contrato (id, tenant_id, trabajador_id, salario_base, tipo_contrato, "
+                + "fecha_inicio, activo, creado_en, estado) values (?, 'otro-tenant', ?, 1, 'INDEFINIDO', '2026-01-01', 0, now(), 'PENDIENTE_FIRMA')",
+                java.util.UUID.randomUUID().toString(), trabajador);
+        assertThat(otroTenant).isEqualTo(1);
+    }
+
+    private void insertar(String trabajador, String estado) {
+        jdbc.update("insert into contratos_contrato (id, tenant_id, trabajador_id, salario_base, tipo_contrato, fecha_inicio, "
+                + "activo, creado_en, estado) values (?, 't-indice', ?, 1, 'INDEFINIDO', '2026-01-01', ?, now(), ?)",
+                java.util.UUID.randomUUID().toString(), trabajador, "FIRMADO".equals(estado), estado);
     }
 
     private static Flyway flyway(DataSource ds, String target) {

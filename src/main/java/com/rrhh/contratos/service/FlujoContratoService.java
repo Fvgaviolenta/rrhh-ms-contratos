@@ -15,6 +15,7 @@ import com.rrhh.contratos.repository.ContratoRepository;
 import com.rrhh.contratos.security.TenantContext;
 import com.rrhh.contratos.service.PlantillaContratoService.Responsable;
 import com.rrhh.contratos.util.PlantillaDocx;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -94,7 +95,12 @@ public class FlujoContratoService {
         contrato.setEstado(EstadoContrato.PENDIENTE_FIRMA);
         contrato.setActivo(false);
         contrato.setCreadoEn(ahora);
-        contratoRepository.save(contrato);
+        try {
+            contratoRepository.saveAndFlush(contrato);
+        } catch (DataIntegrityViolationException e) {
+            // Otra emision concurrente gano el indice unico de contrato vigente (V5).
+            throw new DomainException(409, "El trabajador ya tiene un contrato en espera de firma o firmado");
+        }
 
         ContratoDocumento documento = new ContratoDocumento();
         documento.setId(UUID.randomUUID().toString());

@@ -26,12 +26,18 @@ import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.hasSize;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -171,6 +177,27 @@ class EmisionContratoTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errores[0].campo").value("trabajador_id"));
         assertThat(contratosDe(trabajador)).isZero();
+    }
+
+    @Test
+    void emisionesConcurrentesCreanUnSoloContrato() throws Exception {
+        String trabajador = UUID.randomUUID().toString();
+        // Las dos solicitudes pasan juntas la validacion del trabajador y luego compiten por crear el contrato.
+        CyclicBarrier juntas = new CyclicBarrier(2);
+        doAnswer(inv -> {
+            juntas.await(10, TimeUnit.SECONDS);
+            return null;
+        }).when(trabajadoresClient).exigirDelTenant(trabajador);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<Integer> a = pool.submit(() -> emitir("admin", trabajador, rrhhValidos()).andReturn().getResponse().getStatus());
+            Future<Integer> b = pool.submit(() -> emitir("admin", trabajador, rrhhValidos()).andReturn().getResponse().getStatus());
+            assertThat(java.util.List.of(a.get(30, TimeUnit.SECONDS), b.get(30, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder(201, 409);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(contratosDe(trabajador)).isEqualTo(1);
     }
 
     private ResultActions emitir(String token, String trabajadorId, Map<String, String> campos) throws Exception {

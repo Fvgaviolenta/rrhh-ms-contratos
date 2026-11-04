@@ -15,6 +15,7 @@ import com.rrhh.contratos.repository.LiquidacionRepository;
 import com.rrhh.contratos.security.Roles;
 import com.rrhh.contratos.security.TenantContext;
 import com.rrhh.contratos.util.LiquidacionCalculator;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Value;
@@ -110,7 +111,12 @@ public class ContratoService {
         contrato.setEstado(EstadoContrato.FIRMADO);
         contrato.setActivo(true);
         contrato.setCreadoEn(Instant.now());
-        contratoRepository.save(contrato);
+        try {
+            contratoRepository.saveAndFlush(contrato);
+        } catch (DataIntegrityViolationException e) {
+            // Otra creacion o emision concurrente gano el indice unico de contrato vigente (V5).
+            throw new DomainException(400, "El trabajador ya tiene un contrato activo", "trabajador_id");
+        }
         auditoria.auditar("Contrato", contrato.getId(), "Creacion", null, contrato.getSalarioBase().toPlainString());
         outboxPublisher.registrar("contrato.creado", contrato.getTenantId(), contrato.getId(),
                 java.util.Map.of("trabajadorId", contrato.getTrabajadorId(), "contratoId", contrato.getId()));
