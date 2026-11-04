@@ -8,6 +8,7 @@ import com.rrhh.contratos.dto.response.LiquidacionResponse;
 import com.rrhh.contratos.exception.DomainException;
 import com.rrhh.contratos.model.AuditLog;
 import com.rrhh.contratos.model.Contrato;
+import com.rrhh.contratos.model.EstadoContrato;
 import com.rrhh.contratos.model.Liquidacion;
 import com.rrhh.contratos.repository.AuditLogRepository;
 import com.rrhh.contratos.repository.ContratoRepository;
@@ -30,11 +31,15 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.UUID;
 
 @Service
 public class ContratoService {
+    /** Estados que cuentan como "el trabajador tiene contrato": a lo sumo uno por trabajador (S2). */
+    public static final EnumSet<EstadoContrato> ESTADOS_VIGENTES = EnumSet.of(EstadoContrato.PENDIENTE_FIRMA, EstadoContrato.FIRMADO);
+
     private final ContratoRepository contratoRepository;
     private final LiquidacionRepository liquidacionRepository;
     private final AuditLogRepository auditLogRepository;
@@ -88,7 +93,7 @@ public class ContratoService {
     public ContratoResponse crear(CrearContratoRequest request) {
         String tenantId = tenantContext.require().tenantId();
         validarTrabajadorDelTenant(request.trabajadorId());
-        if (contratoRepository.existsByTenantIdAndTrabajadorIdAndActivoTrue(tenantId, request.trabajadorId())) {
+        if (contratoRepository.existsByTenantIdAndTrabajadorIdAndEstadoIn(tenantId, request.trabajadorId(), ESTADOS_VIGENTES)) {
             throw new DomainException(400, "El trabajador ya tiene un contrato activo", "trabajador_id");
         }
         Contrato contrato = new Contrato();
@@ -98,6 +103,7 @@ public class ContratoService {
         contrato.setSalarioBase(request.salarioBase());
         contrato.setTipoContrato(request.tipoContrato());
         contrato.setFechaInicio(request.fechaInicio());
+        contrato.setEstado(EstadoContrato.FIRMADO);
         contrato.setActivo(true);
         contrato.setCreadoEn(Instant.now());
         contratoRepository.save(contrato);
@@ -110,6 +116,7 @@ public class ContratoService {
     @Transactional
     public ContratoResponse actualizar(String contratoId, ActualizarContratoRequest request) {
         Contrato contrato = buscar(contratoId);
+        exigirNoPendienteNiRechazado(contrato, "modificar");
         BigDecimal anterior = contrato.getSalarioBase();
         if (request.salarioBase() != null) {
             contrato.setSalarioBase(request.salarioBase());
@@ -124,9 +131,10 @@ public class ContratoService {
     @Transactional
     public ContratoResponse finalizar(String contratoId) {
         Contrato contrato = buscar(contratoId);
-        if (!contrato.isActivo()) {
-            throw new DomainException(400, "El contrato ya está finalizado");
+        if (contrato.getEstado() != EstadoContrato.FIRMADO) {
+            throw new DomainException(409, "No se puede finalizar un contrato en estado " + contrato.getEstado());
         }
+        contrato.setEstado(EstadoContrato.FINALIZADO);
         contrato.setActivo(false);
         contrato.setFechaTermino(LocalDate.now());
         contratoRepository.save(contrato);
@@ -139,6 +147,7 @@ public class ContratoService {
     public LiquidacionResponse calcularLiquidacion(CalcularLiquidacionRequest request) {
         Contrato contrato = buscar(request.contratoId());
         validarAccesoTrabajador(contrato.getTrabajadorId());
+        exigirNoPendienteNiRechazado(contrato, "calcular la liquidación de");
         BigDecimal montoHorasExtra = obtenerHorasExtraAprobadas(contrato.getTrabajadorId(), request.periodo());
         BigDecimal totalHaberes = contrato.getSalarioBase().add(montoHorasExtra);
         LiquidacionCalculator.Resultado r = LiquidacionCalculator.calcular(totalHaberes, contrato.getTipoContrato());
@@ -164,6 +173,13 @@ public class ContratoService {
     private Contrato buscar(String contratoId) {
         return contratoRepository.findByIdAndTenantId(contratoId, tenantContext.require().tenantId())
                 .orElseThrow(() -> new DomainException(404, "Contrato no encontrado"));
+    }
+
+    private static void exigirNoPendienteNiRechazado(Contrato contrato, String accion) {
+        EstadoContrato estado = contrato.getEstado();
+        if (estado == EstadoContrato.PENDIENTE_FIRMA || estado == EstadoContrato.RECHAZADO) {
+            throw new DomainException(409, "No se puede " + accion + " un contrato en estado " + estado);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -233,7 +249,8 @@ public class ContratoService {
 
     private ContratoResponse toResponse(Contrato c) {
         return new ContratoResponse(c.getId(), c.getTenantId(), c.getTrabajadorId(), c.getSalarioBase(),
-                c.getTipoContrato(), c.getFechaInicio(), c.getFechaTermino(), c.isActivo());
+                c.getTipoContrato(), c.getFechaInicio(), c.getFechaTermino(), c.isActivo(),
+                c.getEstado(), c.getJornadaHorasSemanales());
     }
 
     private LiquidacionResponse toResponse(Liquidacion l) {
