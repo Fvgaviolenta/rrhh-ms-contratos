@@ -9,6 +9,7 @@ import com.rrhh.contratos.exception.DomainException;
 import com.rrhh.contratos.model.Contrato;
 import com.rrhh.contratos.model.EstadoContrato;
 import com.rrhh.contratos.model.Liquidacion;
+import com.rrhh.contratos.repository.ContratoDocumentoRepository;
 import com.rrhh.contratos.repository.ContratoRepository;
 import com.rrhh.contratos.repository.LiquidacionRepository;
 import com.rrhh.contratos.security.Roles;
@@ -31,6 +32,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -39,6 +41,7 @@ public class ContratoService {
     public static final EnumSet<EstadoContrato> ESTADOS_VIGENTES = EnumSet.of(EstadoContrato.PENDIENTE_FIRMA, EstadoContrato.FIRMADO);
 
     private final ContratoRepository contratoRepository;
+    private final ContratoDocumentoRepository documentoRepository;
     private final LiquidacionRepository liquidacionRepository;
     private final AuditoriaContratos auditoria;
     private final TrabajadoresClient trabajadoresClient;
@@ -49,6 +52,7 @@ public class ContratoService {
 
     public ContratoService(
             ContratoRepository contratoRepository,
+            ContratoDocumentoRepository documentoRepository,
             LiquidacionRepository liquidacionRepository,
             AuditoriaContratos auditoria,
             TrabajadoresClient trabajadoresClient,
@@ -57,6 +61,7 @@ public class ContratoService {
             OutboxPublisher outboxPublisher
     ) {
         this.contratoRepository = contratoRepository;
+        this.documentoRepository = documentoRepository;
         this.liquidacionRepository = liquidacionRepository;
         this.auditoria = auditoria;
         this.trabajadoresClient = trabajadoresClient;
@@ -67,24 +72,25 @@ public class ContratoService {
     }
 
     public List<ContratoResponse> listar() {
-        return contratoRepository.findByTenantId(tenantContext.require().tenantId()).stream().map(ContratoService::toResponse).toList();
+        String tenantId = tenantContext.require().tenantId();
+        return conDocumento(tenantId, contratoRepository.findByTenantId(tenantId));
     }
 
     public List<ContratoResponse> listarPorTenantPlataforma(String tenantId) {
         exigirOperadorSaas();
-        return contratoRepository.findByTenantId(tenantId).stream().map(ContratoService::toResponse).toList();
+        return conDocumento(tenantId, contratoRepository.findByTenantId(tenantId));
     }
 
     public List<ContratoResponse> porTrabajador(String trabajadorId) {
         validarAccesoTrabajador(trabajadorId);
-        return contratoRepository.findByTenantIdAndTrabajadorId(tenantContext.require().tenantId(), trabajadorId)
-                .stream().map(ContratoService::toResponse).toList();
+        String tenantId = tenantContext.require().tenantId();
+        return conDocumento(tenantId, contratoRepository.findByTenantIdAndTrabajadorId(tenantId, trabajadorId));
     }
 
     public ContratoResponse obtener(String contratoId) {
         Contrato contrato = buscar(contratoId);
         validarAccesoTrabajador(contrato.getTrabajadorId());
-        return toResponse(contrato);
+        return conDocumento(contrato);
     }
 
     @Transactional
@@ -123,7 +129,7 @@ public class ContratoService {
         if (request.tipoContrato() != null) {
             contrato.setTipoContrato(request.tipoContrato());
         }
-        return toResponse(contratoRepository.save(contrato));
+        return conDocumento(contratoRepository.save(contrato));
     }
 
     @Transactional
@@ -138,7 +144,7 @@ public class ContratoService {
         contratoRepository.save(contrato);
         outboxPublisher.registrar("contrato.finalizado", contrato.getTenantId(), contrato.getId(),
                 java.util.Map.of("trabajadorId", contrato.getTrabajadorId(), "contratoId", contrato.getId()));
-        return toResponse(contrato);
+        return conDocumento(contrato);
     }
 
     @Transactional
@@ -211,10 +217,24 @@ public class ContratoService {
         }
     }
 
+    /** Marca {@code documento_firmado} con una sola consulta por listado, no una por contrato. */
+    private List<ContratoResponse> conDocumento(String tenantId, List<Contrato> contratos) {
+        Set<String> conPdf = documentoRepository.contratoIdsConPdfFirmado(tenantId);
+        return contratos.stream().map(c -> toResponse(c, conPdf.contains(c.getId()))).toList();
+    }
+
+    private ContratoResponse conDocumento(Contrato contrato) {
+        return conDocumento(contrato.getTenantId(), List.of(contrato)).get(0);
+    }
+
     static ContratoResponse toResponse(Contrato c) {
+        return toResponse(c, false);
+    }
+
+    static ContratoResponse toResponse(Contrato c, boolean documentoFirmado) {
         return new ContratoResponse(c.getId(), c.getTenantId(), c.getTrabajadorId(), c.getSalarioBase(),
                 c.getTipoContrato(), c.getFechaInicio(), c.getFechaTermino(), c.isActivo(),
-                c.getEstado(), c.getJornadaHorasSemanales());
+                c.getEstado(), c.getJornadaHorasSemanales(), documentoFirmado);
     }
 
     private LiquidacionResponse toResponse(Liquidacion l) {

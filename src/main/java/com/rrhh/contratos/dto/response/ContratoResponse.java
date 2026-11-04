@@ -15,5 +15,6 @@ public record ContratoResponse(
         LocalDate fechaTermino,
         boolean activo,
         EstadoContrato estado,
-        Integer jornadaHorasSemanales
+        Integer jornadaHorasSemanales,
+        boolean documentoFirmado
 ) {}

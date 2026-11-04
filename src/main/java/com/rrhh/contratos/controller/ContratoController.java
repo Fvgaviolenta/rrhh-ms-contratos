@@ -2,17 +2,23 @@ package com.rrhh.contratos.controller;
 
 import com.rrhh.contratos.dto.ApiResponse;
 import com.rrhh.contratos.dto.request.ActualizarContratoRequest;
+import com.rrhh.contratos.dto.request.CamposRequest;
+import com.rrhh.contratos.dto.request.RechazarContratoRequest;
 import com.rrhh.contratos.dto.request.CalcularLiquidacionRequest;
 import com.rrhh.contratos.dto.request.CrearContratoRequest;
 import com.rrhh.contratos.dto.request.EmitirContratoRequest;
 import com.rrhh.contratos.dto.response.CampoPlantillaResponse;
 import com.rrhh.contratos.dto.response.ContratoResponse;
 import com.rrhh.contratos.dto.response.LiquidacionResponse;
+import com.rrhh.contratos.dto.response.MiContratoResponse;
 import com.rrhh.contratos.service.ContratoService;
 import com.rrhh.contratos.service.FlujoContratoService;
 import com.rrhh.contratos.service.PlantillaContratoService;
 import jakarta.validation.Valid;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -59,6 +65,42 @@ public class ContratoController {
                 .body(ApiResponse.created(flujoContratoService.emitir(request), "Contrato emitido, en espera de firma"));
     }
 
+    @GetMapping("/contratos/mio")
+    @PreAuthorize("hasAnyRole('TRABAJADOR','JEFATURA')")
+    public ApiResponse<MiContratoResponse> mio() {
+        return ApiResponse.ok(flujoContratoService.mio(), "Mi contrato");
+    }
+
+    @PutMapping("/contratos/mio/campos")
+    @PreAuthorize("hasAnyRole('TRABAJADOR','JEFATURA')")
+    public ApiResponse<MiContratoResponse> guardarCampos(@Valid @RequestBody CamposRequest request) {
+        return ApiResponse.ok(flujoContratoService.guardarCampos(request.campos()), "Campos guardados");
+    }
+
+    @GetMapping("/contratos/mio/pdf")
+    @PreAuthorize("hasAnyRole('TRABAJADOR','JEFATURA')")
+    public ResponseEntity<byte[]> pdfMio() {
+        return pdf(flujoContratoService.pdfMio());
+    }
+
+    @PostMapping("/contratos/mio/aprobar")
+    @PreAuthorize("hasAnyRole('TRABAJADOR','JEFATURA')")
+    public ApiResponse<MiContratoResponse> aprobar() {
+        return ApiResponse.ok(flujoContratoService.aprobar(), "Contrato firmado");
+    }
+
+    @PostMapping("/contratos/mio/rechazar")
+    @PreAuthorize("hasAnyRole('TRABAJADOR','JEFATURA')")
+    public ApiResponse<MiContratoResponse> rechazar(@Valid @RequestBody(required = false) RechazarContratoRequest request) {
+        return ApiResponse.ok(flujoContratoService.rechazar(request == null ? null : request.motivo()), "Contrato rechazado");
+    }
+
+    @GetMapping("/contratos/{contrato_id}/pdf")
+    @PreAuthorize("hasAnyRole('SUPERADMIN','ADMIN_RRHH')")
+    public ResponseEntity<byte[]> pdfAdmin(@PathVariable("contrato_id") String contratoId) {
+        return pdf(flujoContratoService.pdfAdmin(contratoId));
+    }
+
     @GetMapping("/contratos/trabajador/{trabajador_id}")
     @PreAuthorize("hasAnyRole('SUPERADMIN','ADMIN_RRHH','TRABAJADOR')")
     public ApiResponse<List<ContratoResponse>> porTrabajador(@PathVariable("trabajador_id") String trabajadorId) {
@@ -91,6 +133,15 @@ public class ContratoController {
     @PreAuthorize("hasAnyRole('SUPERADMIN','ADMIN_RRHH')")
     public ApiResponse<ContratoResponse> finalizar(@PathVariable("contrato_id") String contratoId) {
         return ApiResponse.ok(contratoService.finalizar(contratoId), "Contrato finalizado");
+    }
+
+    private static ResponseEntity<byte[]> pdf(FlujoContratoService.PdfContrato pdf) {
+        ContentDisposition disposition = ContentDisposition.inline()
+                .filename("contrato-" + pdf.fechaInicio() + ".pdf").build();
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
+                .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
+                .body(pdf.pdf());
     }
 
     @PostMapping("/liquidaciones/calcular")

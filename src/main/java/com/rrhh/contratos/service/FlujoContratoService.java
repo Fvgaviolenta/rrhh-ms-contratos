@@ -1,9 +1,11 @@
 package com.rrhh.contratos.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rrhh.contratos.dto.request.EmitirContratoRequest;
 import com.rrhh.contratos.dto.response.ContratoResponse;
+import com.rrhh.contratos.dto.response.MiContratoResponse;
 import com.rrhh.contratos.exception.DomainException;
 import com.rrhh.contratos.model.Contrato;
 import com.rrhh.contratos.model.ContratoDocumento;
@@ -12,13 +14,16 @@ import com.rrhh.contratos.repository.ContratoDocumentoRepository;
 import com.rrhh.contratos.repository.ContratoRepository;
 import com.rrhh.contratos.security.TenantContext;
 import com.rrhh.contratos.service.PlantillaContratoService.Responsable;
+import com.rrhh.contratos.util.PlantillaDocx;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -27,6 +32,13 @@ import java.util.UUID;
  */
 @Service
 public class FlujoContratoService {
+    static final String SIN_FICHA = "Tu usuario no está vinculado a una ficha de trabajador";
+    static final String FIRMADO_SIN_DOCUMENTO = "El contrato firmado no tiene documento";
+    private static final TypeReference<LinkedHashMap<String, String>> MAPA = new TypeReference<>() {};
+
+    /** PDF listo para enviar, con la fecha de inicio para el nombre del archivo. */
+    public record PdfContrato(byte[] pdf, LocalDate fechaInicio) {}
+
     private final ContratoRepository contratoRepository;
     private final ContratoDocumentoRepository documentoRepository;
     private final PlantillaContratoService plantilla;
@@ -97,6 +109,150 @@ public class FlujoContratoService {
         outboxPublisher.registrar("contrato.creado", tenantId, contrato.getId(),
                 Map.of("trabajadorId", trabajadorId, "contratoId", contrato.getId()));
         return ContratoService.toResponse(contrato);
+    }
+
+    /** Estado del contrato del trabajador autenticado; tenant y trabajador salen solo del JWT. */
+    @Transactional(readOnly = true)
+    public MiContratoResponse mio() {
+        TenantContext.AuthenticatedUser actor = trabajadorAutenticado();
+        return vigente(actor).map(c -> aMiContrato(c, documentoDe(c).orElse(null)))
+                .orElseGet(MiContratoResponse::sinContrato);
+    }
+
+    /** Guarda los campos del trabajador y genera el .docx completo; solo con el contrato en espera de firma. */
+    @Transactional
+    public MiContratoResponse guardarCampos(Map<String, String> campos) {
+        TenantContext.AuthenticatedUser actor = trabajadorAutenticado();
+        Contrato contrato = exigirEnEspera(actor, "completar los campos de");
+        ContratoDocumento documento = documentoDe(contrato)
+                .orElseThrow(() -> new DomainException(409, "El contrato en espera no tiene documento; RRHH debe emitirlo de nuevo"));
+        Map<String, String> trabajador = plantilla.validar(Responsable.TRABAJADOR, campos);
+        byte[] docx;
+        try {
+            docx = plantilla.generarDocx(deJson(documento.getCamposRrhh()), trabajador);
+        } catch (IllegalStateException e) {
+            throw new DomainException(500, e.getMessage());
+        }
+        documento.setCamposTrabajador(aJson(trabajador));
+        documento.setDocx(docx);
+        documento.setPlantillaSha256(plantilla.sha256());
+        documento.setActualizadoEn(Instant.now());
+        documentoRepository.save(documento);
+        return aMiContrato(contrato, documento);
+    }
+
+    /** En espera: previsualizacion convertida en cada llamada. Firmado: el PDF guardado al aprobar. */
+    @Transactional(readOnly = true)
+    public PdfContrato pdfMio() {
+        TenantContext.AuthenticatedUser actor = trabajadorAutenticado();
+        Contrato contrato = vigente(actor).orElseThrow(() -> new DomainException(404, "No tienes un contrato"));
+        ContratoDocumento documento = documentoDe(contrato).orElse(null);
+        if (contrato.getEstado() == EstadoContrato.FIRMADO) {
+            if (documento == null || documento.getPdfFirmado() == null) {
+                throw new DomainException(404, FIRMADO_SIN_DOCUMENTO);
+            }
+            return new PdfContrato(documento.getPdfFirmado(), contrato.getFechaInicio());
+        }
+        if (documento == null || documento.getDocx() == null) {
+            throw new DomainException(409, "Aún no hay documento para previsualizar: guarda tus campos primero");
+        }
+        return new PdfContrato(PlantillaDocx.aPdf(documento.getDocx()), contrato.getFechaInicio());
+    }
+
+    /** El trabajador aprueba: el PDF final se convierte una vez y se guarda; el contrato pasa a FIRMADO. */
+    @Transactional
+    public MiContratoResponse aprobar() {
+        TenantContext.AuthenticatedUser actor = trabajadorAutenticado();
+        Contrato contrato = exigirEnEspera(actor, "aprobar");
+        ContratoDocumento documento = documentoDe(contrato)
+                .filter(d -> d.getDocx() != null)
+                .orElseThrow(() -> new DomainException(409, "Guarda tus campos para generar el documento antes de aprobar"));
+        Instant ahora = Instant.now();
+        documento.setPdfFirmado(PlantillaDocx.aPdf(documento.getDocx()));
+        documento.setActualizadoEn(ahora);
+        documentoRepository.save(documento);
+        contrato.setEstado(EstadoContrato.FIRMADO);
+        contrato.setActivo(true);
+        contrato.setFirmadoEn(ahora);
+        contratoRepository.save(contrato);
+        auditoria.auditar("Contrato", contrato.getId(), "Firma", EstadoContrato.PENDIENTE_FIRMA.name(), EstadoContrato.FIRMADO.name());
+        outboxPublisher.registrar("contrato.firmado", contrato.getTenantId(), contrato.getId(),
+                Map.of("trabajadorId", contrato.getTrabajadorId(), "contratoId", contrato.getId()));
+        return aMiContrato(contrato, documento);
+    }
+
+    /** El trabajador rechaza: el contrato pasa a RECHAZADO y el trabajador vuelve a SIN_CONTRATO. */
+    @Transactional
+    public MiContratoResponse rechazar(String motivo) {
+        TenantContext.AuthenticatedUser actor = trabajadorAutenticado();
+        Contrato contrato = exigirEnEspera(actor, "rechazar");
+        contrato.setEstado(EstadoContrato.RECHAZADO);
+        contrato.setActivo(false);
+        contratoRepository.save(contrato);
+        String detalle = motivo == null || motivo.isBlank() ? null : motivo.strip();
+        auditoria.auditar("Contrato", contrato.getId(), "Rechazo", EstadoContrato.PENDIENTE_FIRMA.name(), detalle);
+        outboxPublisher.registrar("contrato.rechazado", contrato.getTenantId(), contrato.getId(),
+                Map.of("trabajadorId", contrato.getTrabajadorId(), "contratoId", contrato.getId()));
+        return MiContratoResponse.sinContrato();
+    }
+
+    /** PDF firmado de cualquier contrato del tenant del admin; 404 si el contrato no es del tenant o no tiene PDF. */
+    @Transactional(readOnly = true)
+    public PdfContrato pdfAdmin(String contratoId) {
+        String tenantId = tenantContext.require().tenantId();
+        Contrato contrato = contratoRepository.findByIdAndTenantId(contratoId, tenantId)
+                .orElseThrow(() -> new DomainException(404, "Contrato no encontrado"));
+        byte[] pdf = documentoDe(contrato).map(ContratoDocumento::getPdfFirmado).orElse(null);
+        if (pdf == null) {
+            boolean firmado = contrato.getEstado() == EstadoContrato.FIRMADO || contrato.getEstado() == EstadoContrato.FINALIZADO;
+            throw new DomainException(404, firmado ? FIRMADO_SIN_DOCUMENTO : "El contrato no tiene un documento firmado");
+        }
+        return new PdfContrato(pdf, contrato.getFechaInicio());
+    }
+
+    private TenantContext.AuthenticatedUser trabajadorAutenticado() {
+        TenantContext.AuthenticatedUser actor = tenantContext.require();
+        if (actor.trabajadorId() == null || actor.trabajadorId().isBlank()) {
+            throw new DomainException(403, SIN_FICHA);
+        }
+        return actor;
+    }
+
+    private Optional<Contrato> vigente(TenantContext.AuthenticatedUser actor) {
+        return contratoRepository.findFirstByTenantIdAndTrabajadorIdAndEstadoIn(
+                actor.tenantId(), actor.trabajadorId(), ContratoService.ESTADOS_VIGENTES);
+    }
+
+    private Contrato exigirEnEspera(TenantContext.AuthenticatedUser actor, String accion) {
+        Contrato contrato = vigente(actor)
+                .orElseThrow(() -> new DomainException(409, "No tienes un contrato en espera de firma"));
+        if (contrato.getEstado() != EstadoContrato.PENDIENTE_FIRMA) {
+            throw new DomainException(409, "No se puede " + accion + " un contrato en estado " + contrato.getEstado());
+        }
+        return contrato;
+    }
+
+    private Optional<ContratoDocumento> documentoDe(Contrato contrato) {
+        return documentoRepository.findByContratoIdAndTenantId(contrato.getId(), contrato.getTenantId());
+    }
+
+    private MiContratoResponse aMiContrato(Contrato contrato, ContratoDocumento documento) {
+        boolean firmado = contrato.getEstado() == EstadoContrato.FIRMADO;
+        boolean pdfFirmado = documento != null && documento.getPdfFirmado() != null;
+        boolean listo = firmado ? pdfFirmado : documento != null && documento.getDocx() != null;
+        Map<String, String> rrhh = documento == null ? null : deJson(documento.getCamposRrhh());
+        Map<String, String> trabajador = documento == null || documento.getCamposTrabajador() == null
+                ? null : deJson(documento.getCamposTrabajador());
+        return new MiContratoResponse(firmado ? MiContratoResponse.FIRMADO : MiContratoResponse.EN_ESPERA,
+                ContratoService.toResponse(contrato, pdfFirmado), rrhh, trabajador, listo);
+    }
+
+    private Map<String, String> deJson(String valor) {
+        try {
+            return json.readValue(valor, MAPA);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("No fue posible leer los campos guardados del contrato", e);
+        }
     }
 
     private String aJson(Map<String, String> valores) {
