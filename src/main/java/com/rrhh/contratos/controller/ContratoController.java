@@ -4,9 +4,13 @@ import com.rrhh.contratos.dto.ApiResponse;
 import com.rrhh.contratos.dto.request.ActualizarContratoRequest;
 import com.rrhh.contratos.dto.request.CalcularLiquidacionRequest;
 import com.rrhh.contratos.dto.request.CrearContratoRequest;
+import com.rrhh.contratos.dto.request.EmitirContratoRequest;
+import com.rrhh.contratos.dto.response.CampoPlantillaResponse;
 import com.rrhh.contratos.dto.response.ContratoResponse;
 import com.rrhh.contratos.dto.response.LiquidacionResponse;
 import com.rrhh.contratos.service.ContratoService;
+import com.rrhh.contratos.service.FlujoContratoService;
+import com.rrhh.contratos.service.PlantillaContratoService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -19,9 +23,14 @@ import java.util.List;
 @RequestMapping("/api/v1")
 public class ContratoController {
     private final ContratoService contratoService;
+    private final FlujoContratoService flujoContratoService;
+    private final PlantillaContratoService plantillaContratoService;
 
-    public ContratoController(ContratoService contratoService) {
+    public ContratoController(ContratoService contratoService, FlujoContratoService flujoContratoService,
+                              PlantillaContratoService plantillaContratoService) {
         this.contratoService = contratoService;
+        this.flujoContratoService = flujoContratoService;
+        this.plantillaContratoService = plantillaContratoService;
     }
 
     @GetMapping("/contratos")
@@ -35,6 +44,19 @@ public class ContratoController {
     public ApiResponse<List<ContratoResponse>> listarPorTenantPlataforma(
             @PathVariable("tenant_id") String tenantId) {
         return ApiResponse.ok(contratoService.listarPorTenantPlataforma(tenantId), "Contratos del tenant solicitado");
+    }
+
+    @GetMapping("/contratos/plantilla/campos")
+    @PreAuthorize("hasAnyRole('SUPERADMIN','ADMIN_RRHH','TRABAJADOR','JEFATURA')")
+    public ApiResponse<List<CampoPlantillaResponse>> camposPlantilla() {
+        return ApiResponse.ok(plantillaContratoService.campos(), "Campos de la plantilla de contrato");
+    }
+
+    @PostMapping("/contratos/emitir")
+    @PreAuthorize("hasAnyRole('SUPERADMIN','ADMIN_RRHH')")
+    public ResponseEntity<ApiResponse<ContratoResponse>> emitir(@Valid @RequestBody EmitirContratoRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.created(flujoContratoService.emitir(request), "Contrato emitido, en espera de firma"));
     }
 
     @GetMapping("/contratos/trabajador/{trabajador_id}")

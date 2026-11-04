@@ -6,11 +6,9 @@ import com.rrhh.contratos.dto.request.CrearContratoRequest;
 import com.rrhh.contratos.dto.response.ContratoResponse;
 import com.rrhh.contratos.dto.response.LiquidacionResponse;
 import com.rrhh.contratos.exception.DomainException;
-import com.rrhh.contratos.model.AuditLog;
 import com.rrhh.contratos.model.Contrato;
 import com.rrhh.contratos.model.EstadoContrato;
 import com.rrhh.contratos.model.Liquidacion;
-import com.rrhh.contratos.repository.AuditLogRepository;
 import com.rrhh.contratos.repository.ContratoRepository;
 import com.rrhh.contratos.repository.LiquidacionRepository;
 import com.rrhh.contratos.security.Roles;
@@ -42,45 +40,45 @@ public class ContratoService {
 
     private final ContratoRepository contratoRepository;
     private final LiquidacionRepository liquidacionRepository;
-    private final AuditLogRepository auditLogRepository;
+    private final AuditoriaContratos auditoria;
+    private final TrabajadoresClient trabajadoresClient;
     private final TenantContext tenantContext;
     private final RestTemplate restTemplate;
-    private final String trabajadoresBaseUrl;
     private final String asistenciaBaseUrl;
     private final OutboxPublisher outboxPublisher;
 
     public ContratoService(
             ContratoRepository contratoRepository,
             LiquidacionRepository liquidacionRepository,
-            AuditLogRepository auditLogRepository,
+            AuditoriaContratos auditoria,
+            TrabajadoresClient trabajadoresClient,
             TenantContext tenantContext,
-            @Value("${rrhh.integrations.trabajadores.base-url:http://localhost:8082}") String trabajadoresBaseUrl,
             @Value("${rrhh.integrations.asistencia.base-url:http://localhost:8084}") String asistenciaBaseUrl,
             OutboxPublisher outboxPublisher
     ) {
         this.contratoRepository = contratoRepository;
         this.liquidacionRepository = liquidacionRepository;
-        this.auditLogRepository = auditLogRepository;
+        this.auditoria = auditoria;
+        this.trabajadoresClient = trabajadoresClient;
         this.tenantContext = tenantContext;
         this.restTemplate = new RestTemplate();
-        this.trabajadoresBaseUrl = trabajadoresBaseUrl.replaceAll("/$", "");
         this.asistenciaBaseUrl = asistenciaBaseUrl.replaceAll("/$", "");
         this.outboxPublisher = outboxPublisher;
     }
 
     public List<ContratoResponse> listar() {
-        return contratoRepository.findByTenantId(tenantContext.require().tenantId()).stream().map(this::toResponse).toList();
+        return contratoRepository.findByTenantId(tenantContext.require().tenantId()).stream().map(ContratoService::toResponse).toList();
     }
 
     public List<ContratoResponse> listarPorTenantPlataforma(String tenantId) {
         exigirOperadorSaas();
-        return contratoRepository.findByTenantId(tenantId).stream().map(this::toResponse).toList();
+        return contratoRepository.findByTenantId(tenantId).stream().map(ContratoService::toResponse).toList();
     }
 
     public List<ContratoResponse> porTrabajador(String trabajadorId) {
         validarAccesoTrabajador(trabajadorId);
         return contratoRepository.findByTenantIdAndTrabajadorId(tenantContext.require().tenantId(), trabajadorId)
-                .stream().map(this::toResponse).toList();
+                .stream().map(ContratoService::toResponse).toList();
     }
 
     public ContratoResponse obtener(String contratoId) {
@@ -92,7 +90,7 @@ public class ContratoService {
     @Transactional
     public ContratoResponse crear(CrearContratoRequest request) {
         String tenantId = tenantContext.require().tenantId();
-        validarTrabajadorDelTenant(request.trabajadorId());
+        trabajadoresClient.exigirDelTenant(request.trabajadorId());
         if (contratoRepository.existsByTenantIdAndTrabajadorIdAndEstadoIn(tenantId, request.trabajadorId(), ESTADOS_VIGENTES)) {
             throw new DomainException(400, "El trabajador ya tiene un contrato activo", "trabajador_id");
         }
@@ -107,7 +105,7 @@ public class ContratoService {
         contrato.setActivo(true);
         contrato.setCreadoEn(Instant.now());
         contratoRepository.save(contrato);
-        auditar("Contrato", contrato.getId(), "Creacion", null, contrato.getSalarioBase().toPlainString());
+        auditoria.auditar("Contrato", contrato.getId(), "Creacion", null, contrato.getSalarioBase().toPlainString());
         outboxPublisher.registrar("contrato.creado", contrato.getTenantId(), contrato.getId(),
                 java.util.Map.of("trabajadorId", contrato.getTrabajadorId(), "contratoId", contrato.getId()));
         return toResponse(contrato);
@@ -120,7 +118,7 @@ public class ContratoService {
         BigDecimal anterior = contrato.getSalarioBase();
         if (request.salarioBase() != null) {
             contrato.setSalarioBase(request.salarioBase());
-            auditar("Contrato", contrato.getId(), "Modificacion", anterior.toPlainString(), request.salarioBase().toPlainString());
+            auditoria.auditar("Contrato", contrato.getId(), "Modificacion", anterior.toPlainString(), request.salarioBase().toPlainString());
         }
         if (request.tipoContrato() != null) {
             contrato.setTipoContrato(request.tipoContrato());
@@ -205,25 +203,6 @@ public class ContratoService {
         }
     }
 
-    private void validarTrabajadorDelTenant(String trabajadorId) {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (!(authentication instanceof JwtAuthenticationToken jwtAuthentication)) {
-            throw new DomainException(401, "No fue posible validar el trabajador autenticado");
-        }
-        HttpHeaders headers = new HttpHeaders();
-        headers.setBearerAuth(jwtAuthentication.getToken().getTokenValue());
-        try {
-            restTemplate.exchange(
-                    trabajadoresBaseUrl + "/api/v1/trabajadores/" + trabajadorId,
-                    HttpMethod.GET,
-                    new HttpEntity<>(headers),
-                    Object.class
-            );
-        } catch (RestClientException ex) {
-            throw new DomainException(400, "El trabajador no pertenece al tenant o no existe", "trabajador_id");
-        }
-    }
-
     private void validarAccesoTrabajador(String trabajadorId) {
         TenantContext.AuthenticatedUser actor = tenantContext.require();
         String authority = Roles.authorityFromClaim(actor.role());
@@ -232,22 +211,7 @@ public class ContratoService {
         }
     }
 
-    private void auditar(String entidad, String entidadId, String accion, String anterior, String nuevo) {
-        TenantContext.AuthenticatedUser actor = tenantContext.require();
-        AuditLog log = new AuditLog();
-        log.setId(UUID.randomUUID().toString());
-        log.setTenantId(actor.tenantId());
-        log.setUsuarioId(actor.userId());
-        log.setEntidad(entidad);
-        log.setEntidadId(entidadId);
-        log.setAccion(accion);
-        log.setValoresAnteriores(anterior);
-        log.setValoresNuevos(nuevo);
-        log.setFechaEvento(Instant.now());
-        auditLogRepository.save(log);
-    }
-
-    private ContratoResponse toResponse(Contrato c) {
+    static ContratoResponse toResponse(Contrato c) {
         return new ContratoResponse(c.getId(), c.getTenantId(), c.getTrabajadorId(), c.getSalarioBase(),
                 c.getTipoContrato(), c.getFechaInicio(), c.getFechaTermino(), c.isActivo(),
                 c.getEstado(), c.getJornadaHorasSemanales());
