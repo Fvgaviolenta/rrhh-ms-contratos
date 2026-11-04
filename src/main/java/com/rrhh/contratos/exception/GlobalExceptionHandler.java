@@ -19,6 +19,11 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(ex.getCodigo()).body(ApiResponse.error(ex.getCodigo(), ex.getMessage(), errores));
     }
 
+    @ExceptionHandler(ValidacionCamposException.class)
+    public ResponseEntity<ApiResponse<Void>> handleValidacionCampos(ValidacionCamposException ex) {
+        return ResponseEntity.badRequest().body(ApiResponse.error(400, "Validación fallida", ex.getErrores()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse<Void>> handleValidation(MethodArgumentNotValidException ex) {
         List<ApiResponse.ErrorItem> errores = ex.getBindingResult().getFieldErrors().stream()
