@@ -2,6 +2,8 @@ package com.rrhh.contratos.controller;
 
 import com.rrhh.contratos.exception.GlobalExceptionHandler;
 import com.rrhh.contratos.service.ContratoService;
+import com.rrhh.contratos.service.FlujoContratoService;
+import com.rrhh.contratos.service.PlantillaContratoService;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -19,7 +21,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ErroresClienteTest {
 
     private final MockMvc mockMvc = MockMvcBuilders
-            .standaloneSetup(new ContratoController(mock(ContratoService.class)))
+            .standaloneSetup(new ContratoController(mock(ContratoService.class), mock(FlujoContratoService.class),
+                    mock(PlantillaContratoService.class)))
             .setControllerAdvice(new GlobalExceptionHandler())
             .build();
 

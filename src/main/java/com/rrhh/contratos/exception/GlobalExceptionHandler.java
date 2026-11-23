@@ -30,6 +30,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return ResponseEntity.status(ex.getCodigo()).body(ApiResponse.error(ex.getCodigo(), ex.getMessage(), errores));
     }
 
+    @ExceptionHandler(ValidacionCamposException.class)
+    public ResponseEntity<ApiResponse<Void>> handleValidacionCampos(ValidacionCamposException ex) {
+        return ResponseEntity.badRequest().body(ApiResponse.error(400, "Validación fallida", ex.getErrores()));
+    }
+
     @Override
     protected ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException ex, HttpHeaders headers,
                                                                   HttpStatusCode status, WebRequest request) {

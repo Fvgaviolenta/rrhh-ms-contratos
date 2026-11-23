@@ -2,6 +2,8 @@ package com.rrhh.contratos.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import lombok.Getter;
@@ -35,4 +37,11 @@ public class Contrato {
     private boolean activo = true;
     @Column(name = "creado_en", nullable = false)
     private Instant creadoEn;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    private EstadoContrato estado = EstadoContrato.FIRMADO;
+    @Column(name = "jornada_horas_semanales")
+    private Integer jornadaHorasSemanales;
+    @Column(name = "firmado_en")
+    private Instant firmadoEn;
 }
