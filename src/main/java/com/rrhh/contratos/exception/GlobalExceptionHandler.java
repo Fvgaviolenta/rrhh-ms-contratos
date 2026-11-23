@@ -1,18 +1,29 @@
 package com.rrhh.contratos.exception;
 
 import com.rrhh.contratos.dto.ApiResponse;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
+import org.springframework.lang.Nullable;
 import org.springframework.security.access.AccessDeniedException;
-import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 import java.util.List;
 
+/**
+ * Errores de la API con el formato {@link ApiResponse}.
+ *
+ * <p>Extiende {@link ResponseEntityExceptionHandler} para que las excepciones propias de Spring MVC
+ * (ruta inexistente, método no permitido, JSON mal formado, parámetro faltante o con tipo inválido,
+ * content type no soportado...) respondan con su status 4xx y no caigan en el handler genérico como 500.
+ */
 @RestControllerAdvice
-public class GlobalExceptionHandler {
+public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(DomainException.class)
     public ResponseEntity<ApiResponse<Void>> handleDomain(DomainException ex) {
         List<ApiResponse.ErrorItem> errores = ex.getCampo() == null ? List.of() : List.of(new ApiResponse.ErrorItem(ex.getCampo(), ex.getMessage()));
@@ -24,12 +35,35 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(ApiResponse.error(400, "Validación fallida", ex.getErrores()));
     }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ApiResponse<Void>> handleValidation(MethodArgumentNotValidException ex) {
+    @Override
+    protected ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException ex, HttpHeaders headers,
+                                                                  HttpStatusCode status, WebRequest request) {
         List<ApiResponse.ErrorItem> errores = ex.getBindingResult().getFieldErrors().stream()
                 .map(e -> new ApiResponse.ErrorItem(e.getField(), e.getDefaultMessage()))
                 .toList();
-        return ResponseEntity.badRequest().body(ApiResponse.error(400, "Validación fallida", errores));
+        return handleExceptionInternal(ex, ApiResponse.error(400, "Validación fallida", errores), headers, status, request);
+    }
+
+    // Todas las excepciones de Spring MVC pasan por aquí: se conserva el status y los headers (Allow en un 405)
+    // y el cuerpo pasa a ApiResponse, sin el detalle interno de la excepción.
+    @Override
+    protected ResponseEntity<Object> handleExceptionInternal(Exception ex, @Nullable Object body, HttpHeaders headers,
+                                                             HttpStatusCode statusCode, WebRequest request) {
+        Object cuerpo = body instanceof ApiResponse<?> ? body
+                : ApiResponse.error(statusCode.value(), mensaje(statusCode), List.of());
+        return super.handleExceptionInternal(ex, cuerpo, headers, statusCode, request);
+    }
+
+    private static String mensaje(HttpStatusCode status) {
+        return switch (status.value()) {
+            case 404 -> "Recurso no encontrado";
+            case 405 -> "Método no permitido";
+            case 406 -> "Formato de respuesta no aceptable";
+            case 413 -> "Contenido demasiado grande";
+            case 415 -> "Tipo de contenido no soportado";
+            case 503 -> "Servicio no disponible";
+            default -> status.is5xxServerError() ? "Error interno" : "Solicitud inválida";
+        };
     }
 
     @ExceptionHandler(AccessDeniedException.class)
