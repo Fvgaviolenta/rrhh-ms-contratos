@@ -15,3 +15,14 @@ CREATE TABLE IF NOT EXISTS identity_grupo_operador (
     usuario_id CHAR(36) NOT NULL,
     PRIMARY KEY (grupo_id, usuario_id)
 );
+
+-- identity_usuario: AlcancePlataforma busca por cognito_sub la fila de un OperadorSaaS cuyo token no trae
+-- custom:user_id. Solo las columnas que leen las consultas; los roles de plataforma no tienen tenant_id.
+CREATE TABLE IF NOT EXISTS identity_usuario (
+    id CHAR(36) NOT NULL PRIMARY KEY,
+    tenant_id CHAR(36) NULL,
+    trabajador_id CHAR(36) NULL,
+    email VARCHAR(255) NULL,
+    cognito_sub VARCHAR(255) NULL,
+    rol VARCHAR(50) NULL
+);

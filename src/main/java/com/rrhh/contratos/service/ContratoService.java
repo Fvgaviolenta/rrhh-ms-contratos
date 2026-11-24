@@ -47,6 +47,7 @@ public class ContratoService {
     private final AuditoriaContratos auditoria;
     private final TrabajadoresClient trabajadoresClient;
     private final TenantContext tenantContext;
+    private final AlcancePlataforma alcancePlataforma;
     private final RestTemplate restTemplate;
     private final String asistenciaBaseUrl;
     private final OutboxPublisher outboxPublisher;
@@ -59,7 +60,8 @@ public class ContratoService {
             TrabajadoresClient trabajadoresClient,
             TenantContext tenantContext,
             @Value("${rrhh.integrations.asistencia.base-url:http://localhost:8084}") String asistenciaBaseUrl,
-            OutboxPublisher outboxPublisher
+            OutboxPublisher outboxPublisher,
+            AlcancePlataforma alcancePlataforma
     ) {
         this.contratoRepository = contratoRepository;
         this.documentoRepository = documentoRepository;
@@ -67,6 +69,7 @@ public class ContratoService {
         this.auditoria = auditoria;
         this.trabajadoresClient = trabajadoresClient;
         this.tenantContext = tenantContext;
+        this.alcancePlataforma = alcancePlataforma;
         this.restTemplate = new RestTemplate();
         this.asistenciaBaseUrl = asistenciaBaseUrl.replaceAll("/$", "");
         this.outboxPublisher = outboxPublisher;
@@ -78,7 +81,7 @@ public class ContratoService {
     }
 
     public List<ContratoResponse> listarPorTenantPlataforma(String tenantId) {
-        exigirOperadorSaas();
+        alcancePlataforma.exigir(tenantContext.current(), tenantId);
         return conDocumento(tenantId, contratoRepository.findByTenantId(tenantId));
     }
 
@@ -206,12 +209,6 @@ public class ContratoService {
             return new BigDecimal(resumen.get("monto_total").toString());
         } catch (RestClientException ex) {
             throw new DomainException(503, "No fue posible obtener las horas extra aprobadas");
-        }
-    }
-
-    private void exigirOperadorSaas() {
-        if (!Roles.OPERADOR_SAAS.equals(Roles.authorityFromClaim(tenantContext.current().role()))) {
-            throw new DomainException(403, "Acceso exclusivo para el operador SaaS");
         }
     }
 

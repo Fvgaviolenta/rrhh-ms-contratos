@@ -12,14 +12,18 @@ import java.util.Map;
 
 /**
  * Decoder de prueba: el valor del token elige los claims. Tokens: "admin", "trabajador",
- * "jefatura", "sin-ficha" (Trabajador sin custom:trabajador_id), "admin-suspendida", "admin-plataforma" y
- * "admin-plataforma-con-tenant". Cualquier otro token es invalido.
+ * "jefatura", "sin-ficha" (Trabajador sin custom:trabajador_id), "admin-suspendida", "admin-plataforma",
+ * "admin-plataforma-con-tenant", "operador-grupo", "operador-sin-grupo" y "operador-grupo-sin-claim". Cualquier otro token es invalido.
  */
 @TestConfiguration
 public class TestJwtConfig {
     public static final String TENANT_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     public static final String TRABAJADOR_ID = "11111111-1111-1111-1111-111111111111";
     public static final String JEFATURA_TRABAJADOR_ID = "22222222-2222-2222-2222-222222222222";
+    /** custom:user_id del token "operador-grupo"; PlataformaAlcanceIT lo asigna a su grupo. */
+    public static final String OPERADOR_GRUPO_ID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+    /** Subject del token "operador-grupo-sin-claim" (sin custom:user_id): su fila se busca por cognito_sub. */
+    public static final String OPERADOR_SIN_CLAIM_SUB = "operador-grupo-sin-claim";
     /** Empresa del token "admin-suspendida"; TenantSuspendidoIT la crea en identity_tenant y la suspende. */
     public static final String TENANT_SUSPENDIBLE = "99999999-9999-9999-9999-999999999999";
 
@@ -56,7 +60,18 @@ public class TestJwtConfig {
             Map.entry("admin-plataforma-con-tenant", Map.of(
                     "email", "owner@gmail.com",
                     "custom:tenant_id", TENANT_SUSPENDIBLE,
-                    "custom:role", "AdminPlataforma"))
+                    "custom:role", "AdminPlataforma")),
+            Map.entry("operador-grupo", Map.of(
+                    "email", "operador.grupo@rrhh.local",
+                    "custom:role", "OperadorSaaS",
+                    "custom:user_id", OPERADOR_GRUPO_ID)),
+            Map.entry("operador-sin-grupo", Map.of(
+                    "email", "operador.solo@rrhh.local",
+                    "custom:role", "OperadorSaaS",
+                    "custom:user_id", "dddddddd-0000-0000-0000-000000000001")),
+            Map.entry("operador-grupo-sin-claim", Map.of(
+                    "email", "operador.grupo@rrhh.local",
+                    "custom:role", "OperadorSaaS"))
     );
 
     @Bean
