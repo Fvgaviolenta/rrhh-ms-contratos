@@ -8,3 +8,5 @@ spring:
   flyway:
     enabled: true
     table: flyway_history_contratos
+    # db/test-callbacks crea las tablas de identity que lee el servicio (solo en tests).
+    locations: classpath:db/migration,classpath:db/test-callbacks

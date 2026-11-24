@@ -46,7 +46,7 @@ public class ContratoController {
     }
 
     @GetMapping("/plataforma/tenants/{tenant_id}/contratos")
-    @PreAuthorize("hasRole('OPERADOR_SAAS')")
+    @PreAuthorize("hasAnyRole('OPERADOR_SAAS','ADMIN_PLATAFORMA')")
     public ApiResponse<List<ContratoResponse>> listarPorTenantPlataforma(
             @PathVariable("tenant_id") String tenantId) {
         return ApiResponse.ok(contratoService.listarPorTenantPlataforma(tenantId), "Contratos del tenant solicitado");
