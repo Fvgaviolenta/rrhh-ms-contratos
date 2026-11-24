@@ -24,6 +24,9 @@ public class TenantContext {
         return user;
     }
 
+    /** El usuario del request, si ya pasó por la autenticación JWT. */
+    public java.util.Optional<AuthenticatedUser> find() { return java.util.Optional.ofNullable(CURRENT.get()); }
+
     public void clear() { CURRENT.remove(); }
 
     public record AuthenticatedUser(String tenantId, String userId, String email, String role, String trabajadorId, String cognitoSub) {}
